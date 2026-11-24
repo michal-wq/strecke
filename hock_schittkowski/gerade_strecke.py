@@ -1,0 +1,168 @@
+import casadi as ca
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def main():
+    opti = ca.Opti()
+    n = 40
+
+    # Strecke und Fahrzeug
+    L = 100.0
+    dL = L / n
+    xStart = 2.5
+    vStart = 1.0
+    B = 4.0
+    m = 790.0
+    alpha = 0.001872
+    F_MotorMax = 10410.0
+    F_HaftMax = 8000.0
+
+    # Hindernis
+    y_hindernis = 60.0
+    b = 3.5
+    c = B
+    eps = 0.01
+
+    if not 0 <= y_hindernis <= L:
+        raise ValueError("Das Hindernis muss zwischen y=0 und y=L liegen.")
+
+    # Entscheidungsvariablen und Stützpunkte
+    u = opti.variable(2 * n)
+    x = u[:n]
+    v = u[n:]
+    x_stuetzpunkte = ca.vertcat(xStart, x)
+    v_stuetzpunkte = ca.vertcat(vStart, v)
+
+    # Seitenposition auf Höhe des Hindernisses
+    segment = min(int(y_hindernis / dL), n - 1)
+    t = (y_hindernis - segment * dL) / dL
+    x_am_hindernis = (
+        (1 - t) * x_stuetzpunkte[segment] + t * x_stuetzpunkte[segment + 1]
+    )
+    opti.subject_to(opti.bounded(b + eps, x_am_hindernis, c - eps))
+
+    # Streckenlängen, Fahrzeiten und Kräfte pro Segment
+    dx = x_stuetzpunkte[1:] - x_stuetzpunkte[:-1]
+    s = ca.sqrt(dL**2 + dx**2)
+    vm = (v_stuetzpunkte[1:] + v_stuetzpunkte[:-1]) / 2
+    dt = s / vm
+    dv = v_stuetzpunkte[1:] - v_stuetzpunkte[:-1]
+    aBahn = dv / dt
+
+    # Die Stützpunktgeschwindigkeit zeigt in das folgende Segment.
+    # Am Ziel gilt die Richtung des letzten Segments.
+    richtung_x = dx / s
+    richtung_y = dL / s
+    v_x = v_stuetzpunkte * ca.vertcat(richtung_x, richtung_x[-1])
+    v_y = v_stuetzpunkte * ca.vertcat(richtung_y, richtung_y[-1])
+    a_x = (v_x[1:] - v_x[:-1]) / dt
+    a_y = (v_y[1:] - v_y[:-1]) / dt
+    a_quadrat = a_x**2 + a_y**2
+    a = ca.sqrt(a_quadrat)
+    F_Reifen = m * a
+    F_Luft = -m * alpha * vm**2
+    F_Brems_Motor = m * aBahn - F_Luft
+
+    # Fahrzeit minimieren und Fahrzeug- und Fahrbahngrenzen einhalten
+    f = ca.sum1(dt)
+    opti.minimize(f)
+    opti.subject_to(F_Brems_Motor / F_MotorMax <= 1)
+    # Die quadrierte, normierte Haftgrenze ist auch bei a = 0 glatt.
+    opti.subject_to(a_quadrat / (F_HaftMax / m)**2 <= 1)
+    opti.subject_to(opti.bounded(0, x, B))
+    opti.subject_to(v >= 0.001)
+
+    opti.set_initial(u, [xStart] * n + [vStart] * n)
+    opti.solver("ipopt")
+    sol = opti.solve()
+
+    print("x* =", sol.value(x))
+    print("v* =", sol.value(v))
+    print("dt* =", sol.value(dt))
+    print("T* =", sol.value(f))
+    print("F_Brems_Motor =", sol.value(F_Brems_Motor))
+    print("F_Reifen =", sol.value(F_Reifen))
+
+    x_opt = np.atleast_1d(sol.value(x))
+    y_stuetzpunkte = [i * dL for i in range(n + 1)]
+    _, ax = plt.subplots(figsize=(5, 8), layout="constrained")
+    ax.plot([xStart, *x_opt], y_stuetzpunkte, "o-", label="Optimale Strecke")
+    ax.axvline(0, color="gray", linestyle="--", label="Fahrbahnrand")
+    ax.axvline(B, color="gray", linestyle="--")
+    ax.plot(
+        [0, b], [y_hindernis, y_hindernis],
+        color="tab:red", linewidth=4, solid_capstyle="butt", label="Hindernis",
+    )
+    ax.set(xlabel="Seitliche Position x [m]", ylabel="Strecke y [m]")
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper left")
+
+    _, (ax_v, ax_a, ax_f) = plt.subplots(
+        3, 1, sharex=True, figsize=(10, 8), layout="constrained",
+    )
+    ax_v.plot(
+        y_stuetzpunkte, sol.value(v_stuetzpunkte),
+        "o", markersize=5, markerfacecolor="none", label="Betrag v an den Stützpunkten",
+    )
+    ax_v.plot(
+        y_stuetzpunkte, sol.value(v_x),
+        ".", color="tab:green", label="$v_x$ seitlich",
+    )
+    ax_v.plot(
+        y_stuetzpunkte, sol.value(v_y),
+        ".", markersize=4, color="tab:red", label="$v_y$ längs der Strecke",
+    )
+    ax_v.stairs(
+        np.atleast_1d(sol.value(vm)), y_stuetzpunkte, baseline=None,
+        color="tab:orange", label="Mittelwert pro Segment",
+    )
+    ax_v.set_ylabel("Geschwindigkeit [m/s]")
+    ax_v.legend(ncol=2)
+
+    ax_a.stairs(
+        np.atleast_1d(sol.value(a)), y_stuetzpunkte, baseline=None,
+        color="tab:blue", label="Betrag a",
+    )
+    ax_a.stairs(
+        np.atleast_1d(sol.value(aBahn)), y_stuetzpunkte, baseline=None,
+        color="tab:orange", linestyle="--", label="Bahnbeschleunigung",
+    )
+    ax_a.stairs(
+        np.atleast_1d(sol.value(a_x)), y_stuetzpunkte, baseline=None,
+        color="tab:green", label="$a_x$ seitlich",
+    )
+    ax_a.stairs(
+        np.atleast_1d(sol.value(a_y)), y_stuetzpunkte, baseline=None,
+        color="tab:red", linestyle=":", label="$a_y$ längs der Strecke",
+    )
+    ax_a.set_ylabel("Beschleunigung [m/s²]")
+    ax_a.legend(ncol=2)
+
+    ax_f.stairs(
+        np.atleast_1d(sol.value(F_Brems_Motor)), y_stuetzpunkte, baseline=None,
+        color="tab:blue", label="Antrieb/Bremse",
+    )
+    ax_f.stairs(
+        np.atleast_1d(sol.value(F_Reifen)), y_stuetzpunkte, baseline=None,
+        color="tab:orange", label="Reifenkraft (Betrag)",
+    )
+    ax_f.stairs(
+        np.atleast_1d(sol.value(F_Luft)), y_stuetzpunkte, baseline=None,
+        color="tab:green", label="Luftwiderstand",
+    )
+    ax_f.axhline(F_MotorMax, color="tab:blue", linestyle="--", label="Motorgrenze")
+    ax_f.axhline(F_HaftMax, color="tab:orange", linestyle="--", label="Haftgrenze")
+    tick_schritt = (n + 9) // 10
+    y_ticks = y_stuetzpunkte[:-1:tick_schritt] + [y_stuetzpunkte[-1]]
+    ax_f.set(xlabel="Strecke y [m]", ylabel="Kraft [N]", xticks=y_ticks)
+    ax_f.legend(ncol=2)
+
+    for achse in (ax_v, ax_a, ax_f):
+        achse.grid(alpha=0.3)
+
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()
