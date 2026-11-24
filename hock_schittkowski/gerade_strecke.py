@@ -1,11 +1,12 @@
 import casadi as ca
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.collections import LineCollection
 
 
 def main():
     opti = ca.Opti()
-    n = 40
+    n = 100
 
     # Strecke und Fahrzeug
     L = 100.0
@@ -21,6 +22,7 @@ def main():
     # (Streckenposition y [m], Breite [m], Fahrbahnrand)
     hindernisse = [
         (40.0, 3.5, "links"),
+        (50.0, 3.5, "rechts"),
         (72.0, 3.8, "rechts"),
         (90.0,1.5,"links"),
         (90.0,1.5,"rechts")
@@ -107,8 +109,21 @@ def main():
 
     x_opt = np.atleast_1d(sol.value(x))
     y_stuetzpunkte = [i * dL for i in range(n + 1)]
-    _, ax = plt.subplots(figsize=(5, 8), layout="constrained")
-    ax.plot([xStart, *x_opt], y_stuetzpunkte, "o-", label="Optimale Strecke")
+    streckenpunkte = np.column_stack(([xStart, *x_opt], y_stuetzpunkte))
+    streckensegmente = np.stack((streckenpunkte[:-1], streckenpunkte[1:]), axis=1)
+    v_opt = sol.value(v_stuetzpunkte)
+    fig, ax = plt.subplots(figsize=(5, 8), layout="constrained")
+    fahrlinie = LineCollection(
+        streckensegmente, array=np.atleast_1d(sol.value(vm)), cmap="viridis",
+        label="Optimale Strecke",
+    )
+    fahrlinie.set_clim(v_opt.min(), v_opt.max())
+    ax.add_collection(fahrlinie)
+    ax.scatter(
+        streckenpunkte[:, 0], y_stuetzpunkte, c=v_opt,
+        cmap=fahrlinie.cmap, norm=fahrlinie.norm,
+    )
+    fig.colorbar(fahrlinie, ax=ax, label="Geschwindigkeitsbetrag [m/s]")
     ax.axvline(0, color="gray", linestyle="--", label="Fahrbahnrand")
     ax.axvline(B, color="gray", linestyle="--")
     for index, (y_hindernis, x_von, x_bis) in enumerate(hindernisbereiche):
