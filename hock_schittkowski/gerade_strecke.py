@@ -10,22 +10,22 @@ def main():
     # Strecke und Fahrzeug
     L = 100.0
     dL = L / n
-    xStart = 2.5
+    xStart = 0.0
     vStart = 1.0
     B = 4.0
     m = 790.0
     alpha = 0.001872
     F_MotorMax = 10410.0
-    F_HaftMax = 8000.0
+    F_HaftMax = 5000.0
 
-    # Hindernis
-    y_hindernis = 60.0
-    b = 3.5
-    c = B
+    # (Streckenposition y [m], Breite [m], Fahrbahnrand)
+    hindernisse = [
+        (40.0, 3.5, "links"),
+        (72.0, 3.8, "rechts"),
+        (90.0,1.5,"links"),
+        (90.0,1.5,"rechts")
+    ]
     eps = 0.01
-
-    if not 0 <= y_hindernis <= L:
-        raise ValueError("Das Hindernis muss zwischen y=0 und y=L liegen.")
 
     # Entscheidungsvariablen und Stützpunkte
     u = opti.variable(2 * n)
@@ -34,13 +34,30 @@ def main():
     x_stuetzpunkte = ca.vertcat(xStart, x)
     v_stuetzpunkte = ca.vertcat(vStart, v)
 
-    # Seitenposition auf Höhe des Hindernisses
-    segment = min(int(y_hindernis / dL), n - 1)
-    t = (y_hindernis - segment * dL) / dL
-    x_am_hindernis = (
-        (1 - t) * x_stuetzpunkte[segment] + t * x_stuetzpunkte[segment + 1]
-    )
-    opti.subject_to(opti.bounded(b + eps, x_am_hindernis, c - eps))
+    # Seitenposition auf Höhe jedes Hindernisses
+    hindernisbereiche = []
+    for y_hindernis, breite, seite in hindernisse:
+        if not 0 <= y_hindernis <= L:
+            raise ValueError(f"Hindernis bei y={y_hindernis:g} m liegt außerhalb der Strecke.")
+        if not 0 <= breite <= B - 2 * eps:
+            raise ValueError(f"Ungültige Hindernisbreite bei y={y_hindernis:g} m.")
+
+        if seite == "links":
+            x_von, x_bis = 0, breite
+            x_min, x_max = x_bis + eps, B - eps
+        elif seite == "rechts":
+            x_von, x_bis = B - breite, B
+            x_min, x_max = eps, x_von - eps
+        else:
+            raise ValueError(f"Ungültige Hindernisseite {seite!r}. Erlaubt sind 'links' und 'rechts'.")
+        hindernisbereiche.append((y_hindernis, x_von, x_bis))
+
+        segment = min(int(y_hindernis / dL), n - 1)
+        t = (y_hindernis - segment * dL) / dL
+        x_am_hindernis = (
+            (1 - t) * x_stuetzpunkte[segment] + t * x_stuetzpunkte[segment + 1]
+        )
+        opti.subject_to(opti.bounded(x_min, x_am_hindernis, x_max))
 
     # Streckenlängen, Fahrzeiten und Kräfte pro Segment
     dx = x_stuetzpunkte[1:] - x_stuetzpunkte[:-1]
@@ -73,7 +90,11 @@ def main():
     opti.subject_to(opti.bounded(0, x, B))
     opti.subject_to(v >= 0.001)
 
-    opti.set_initial(u, [xStart] * n + [vStart] * n)
+    # Eine moderate Beschleunigung liefert Ipopt ein Startprofil für v.
+    a_init = 0.25 * F_HaftMax / m
+    v_init = np.sqrt(vStart**2 + 2 * a_init * dL * np.arange(1, n + 1))
+    opti.set_initial(x, xStart)
+    opti.set_initial(v, v_init)
     opti.solver("ipopt")
     sol = opti.solve()
 
@@ -90,10 +111,12 @@ def main():
     ax.plot([xStart, *x_opt], y_stuetzpunkte, "o-", label="Optimale Strecke")
     ax.axvline(0, color="gray", linestyle="--", label="Fahrbahnrand")
     ax.axvline(B, color="gray", linestyle="--")
-    ax.plot(
-        [0, b], [y_hindernis, y_hindernis],
-        color="tab:red", linewidth=4, solid_capstyle="butt", label="Hindernis",
-    )
+    for index, (y_hindernis, x_von, x_bis) in enumerate(hindernisbereiche):
+        ax.plot(
+            [x_von, x_bis], [y_hindernis, y_hindernis],
+            color="tab:red", linewidth=4, solid_capstyle="butt",
+            label="Hindernisse" if index == 0 else None,
+        )
     ax.set(xlabel="Seitliche Position x [m]", ylabel="Strecke y [m]")
     ax.grid(alpha=0.3)
     ax.legend(loc="upper left")
